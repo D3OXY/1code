@@ -16,13 +16,16 @@ import {
 } from "react"
 import { flushSync } from "react-dom"
 import { createRoot } from "react-dom/client"
+import { useAtomValue } from "jotai"
 import type { FileMentionOption } from "./agents-mentions-editor"
 import { MENTION_PREFIXES } from "./agents-mentions-editor"
+import { sessionInfoAtom } from "../../../lib/atoms"
 import {
   FilesIcon,
   IconSpinner,
   SkillIcon,
   CustomAgentIcon,
+  OriginalMCPIcon,
 } from "../../../components/ui/icons"
 import { ChevronRight } from "lucide-react"
 import {
@@ -107,6 +110,7 @@ interface AgentsFileMentionProps {
   showingFilesList?: boolean
   showingSkillsList?: boolean
   showingAgentsList?: boolean
+  showingToolsList?: boolean
 }
 
 // Category navigation options (shown on root view)
@@ -114,6 +118,7 @@ const CATEGORY_OPTIONS: FileMentionOption[] = [
   { id: "files", label: "Files & Folders", type: "category", path: "", repository: "" },
   { id: "skills", label: "Skills", type: "category", path: "", repository: "" },
   { id: "agents", label: "Agents", type: "category", path: "", repository: "" },
+  { id: "tools", label: "MCP Tools", type: "category", path: "", repository: "" },
 ]
 
 // Known file extensions with icons
@@ -308,12 +313,34 @@ export function getFileIconByExtension(
   }
 }
 
+// Tool icon component (MCP icon) - slightly larger for visibility
+function ToolIcon({ className }: { className?: string }) {
+  // Override size to h-3.5 w-3.5 for better visibility
+  const sizeClass = className?.replace(/h-3\b/, "h-3.5").replace(/w-3\b/, "w-3.5") || className
+  return <OriginalMCPIcon className={sizeClass} />
+}
+
+/**
+ * Format MCP tool name for display
+ * Converts snake_case/underscore names to readable format
+ * e.g., "get_design_context" -> "Get design context"
+ */
+function formatToolName(toolName: string): string {
+  return toolName
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
 // Create SVG icon element in DOM based on file extension or type
-export function createFileIconElement(filename: string, type?: "file" | "folder" | "skill" | "agent" | "category"): SVGSVGElement {
+export function createFileIconElement(filename: string, type?: "file" | "folder" | "skill" | "agent" | "category" | "tool"): SVGSVGElement {
   const IconComponent = type === "skill"
     ? SkillIcon
     : type === "agent"
       ? CustomAgentIcon
+    : type === "tool"
+      ? ToolIcon
     : type === "folder"
       ? FolderOpenIcon
       : (getFileIconByExtension(filename) ?? FilesIcon)
@@ -403,6 +430,8 @@ function CustomAgentIconWrapper({ className }: { className?: string }) {
   return <CustomAgentIcon className={className} />
 }
 
+// ToolIconWrapper removed - use ToolIcon instead (they were identical)
+
 // Category icon component
 function CategoryIcon({ className, categoryId }: { className?: string; categoryId: string }) {
   if (categoryId === "files") {
@@ -414,13 +443,18 @@ function CategoryIcon({ className, categoryId }: { className?: string; categoryI
   if (categoryId === "agents") {
     return <CustomAgentIcon className={className} />
   }
+  if (categoryId === "tools") {
+    // Override size to h-3.5 w-3.5 for better visibility
+    const sizeClass = className?.replace(/h-3\b/, "h-3.5").replace(/w-3\b/, "w-3.5") || className
+    return <OriginalMCPIcon className={sizeClass} />
+  }
   return <FilesIcon className={className} />
 }
 
 /**
- * Get icon component for a file, folder, skill, agent, or category option
+ * Get icon component for a file, folder, skill, agent, tool, or category option
  */
-export function getOptionIcon(option: { id?: string; label: string; type?: "file" | "folder" | "skill" | "agent" | "category" }) {
+export function getOptionIcon(option: { id?: string; label: string; type?: "file" | "folder" | "skill" | "agent" | "category" | "tool" }) {
   if (option.type === "category") {
     // Return a wrapper component for categories
     return function CategoryIconWrapper({ className }: { className?: string }) {
@@ -432,6 +466,9 @@ export function getOptionIcon(option: { id?: string; label: string; type?: "file
   }
   if (option.type === "agent") {
     return CustomAgentIconWrapper
+  }
+  if (option.type === "tool") {
+    return ToolIcon
   }
   if (option.type === "folder") {
     return FolderIcon
@@ -571,6 +608,7 @@ function sortFilesByRelevance<T extends { label: string; path?: string }>(
 /**
  * Render tooltip content for a mention option
  * Skills/agents show description, tools, model info
+ * Tools show MCP server name
  * Files/folders show path
  */
 function renderTooltipContent(option: FileMentionOption) {
@@ -603,6 +641,15 @@ function renderTooltipContent(option: FileMentionOption) {
     )
   }
 
+  if (option.type === "tool") {
+    // Show full tool name (e.g., mcp__figma-local-mcp__get_figjam)
+    return (
+      <div className="text-xs text-muted-foreground font-mono">
+        {option.path}
+      </div>
+    )
+  }
+
   // Files - just path
   return (
     <div className="text-xs text-muted-foreground font-mono truncate w-full">
@@ -627,6 +674,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   showingFilesList = false,
   showingSkillsList = false,
   showingAgentsList = false,
+  showingToolsList = false,
 }: AgentsFileMentionProps) {
   const dropdownRef = useRef<HTMLDivElement>(null)
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -634,6 +682,9 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const [debouncedSearchText, setDebouncedSearchText] = useState(searchText)
 
   const [hoverIndex, setHoverIndex] = useState<number | null>(null)
+
+  // Get session info (MCP servers, tools) from atom
+  const sessionInfo = useAtomValue(sessionInfoAtom)
 
   // Fetch skills from filesystem (cached for 5 minutes)
   const { data: skills = [], isFetching: isFetchingSkills } = trpc.skills.listEnabled.useQuery(undefined, {
@@ -801,13 +852,66 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       }))
   }, [customAgents, debouncedSearchText])
 
-  // Check if we have skills or agents
-  const hasSkills = skillOptions.length > 0
-  const hasAgents = agentOptions.length > 0
-  const hasOnlyFiles = !hasSkills && !hasAgents
+  // Convert MCP tools to mention options (stable, doesn't depend on search)
+  // MCP tools have format like "mcp__servername__toolname"
+  const allToolOptions: FileMentionOption[] = useMemo(() => {
+    if (!sessionInfo?.tools || !sessionInfo?.mcpServers) return []
 
-  // Determine if we're in a subpage view (or showing files directly when no skills/agents)
-  const isInSubpage = showingFilesList || showingSkillsList || showingAgentsList || hasOnlyFiles
+    // Get connected MCP server names
+    const connectedServers = new Set(
+      sessionInfo.mcpServers
+        .filter(s => s.status === "connected")
+        .map(s => s.name)
+    )
+
+    // Filter tools that belong to MCP servers (format: mcp__servername__toolname)
+    const mcpTools = sessionInfo.tools.filter(tool => {
+      if (!tool.startsWith("mcp__")) return false
+      const parts = tool.split("__")
+      if (parts.length < 3) return false
+      const serverName = parts[1]
+      return connectedServers.has(serverName)
+    })
+
+    return mcpTools.map(tool => {
+      const parts = tool.split("__")
+      const serverName = parts[1]
+      const toolName = parts.slice(2).join("__")
+      const displayName = formatToolName(toolName)
+      return {
+        id: `${MENTION_PREFIXES.TOOL}${tool}`,
+        label: displayName, // readable name without underscores
+        path: tool, // full tool name for tooltip/mention
+        repository: "",
+        truncatedPath: serverName, // show server name as context
+        type: "tool" as const,
+        mcpServer: serverName,
+      }
+    })
+  }, [sessionInfo])
+
+  // Filtered tool options based on search
+  const toolOptions: FileMentionOption[] = useMemo(() => {
+    if (!debouncedSearchText) return allToolOptions
+
+    const searchLower = debouncedSearchText.toLowerCase()
+    return allToolOptions.filter(tool => {
+      // Search by: display name, raw tool name, full path, server name
+      return matchesMultiWordSearch(tool.label, searchLower) ||
+             matchesMultiWordSearch(tool.path, searchLower) ||
+             matchesMultiWordSearch(tool.mcpServer || "", searchLower)
+    })
+  }, [allToolOptions, debouncedSearchText])
+
+  // Check if we have skills, agents, or tools
+  // Use base data (not search-filtered) for stable category display
+  const hasSkills = skills.length > 0
+  const hasAgents = customAgents.length > 0
+  const hasTools = allToolOptions.length > 0
+  const hasOnlyFiles = !hasSkills && !hasAgents && !hasTools
+
+  // Determine if we're in a subpage view (or showing files directly when no skills/agents/tools)
+  const isInSubpage = showingFilesList || showingSkillsList || showingAgentsList || showingToolsList || hasOnlyFiles
 
   // Filter category options based on available data
   const availableCategoryOptions = useMemo(() => {
@@ -815,17 +919,18 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       if (category.id === "files") return true // Always show files
       if (category.id === "skills") return hasSkills
       if (category.id === "agents") return hasAgents
+      if (category.id === "tools") return hasTools
       return true
     })
-  }, [hasSkills, hasAgents])
+  }, [hasSkills, hasAgents, hasTools])
 
   // Combined options for keyboard navigation
   // Subpage views show only that category's items
   // Root view shows changed files + category navigation options
   // Search filters globally in root view, within category in subpage
-  // If no skills or agents, skip root view and show files directly
+  // If no skills, agents, or tools, skip root view and show files directly
   const options: FileMentionOption[] = useMemo(() => {
-    // SUBPAGE: Files (or if no skills/agents, show files directly)
+    // SUBPAGE: Files (or if no skills/agents/tools, show files directly)
     if (showingFilesList || hasOnlyFiles) {
       const allFiles = [...changedFileOptions, ...repoFileOptions]
       if (debouncedSearchText) {
@@ -844,20 +949,25 @@ export const AgentsFileMention = memo(function AgentsFileMention({
       return agentOptions // already filtered by search in agentOptions memo
     }
 
+    // SUBPAGE: MCP Tools
+    if (showingToolsList) {
+      return toolOptions // already filtered by search in toolOptions memo
+    }
+
     // ROOT VIEW
     if (debouncedSearchText) {
-      // Global search: search across changed files + categories + skills + agents + repo files
+      // Global search: search across changed files + categories + skills + agents + tools + repo files
       const searchLower = debouncedSearchText.toLowerCase()
       const filteredCategories = availableCategoryOptions.filter(c =>
         c.label.toLowerCase().includes(searchLower)
       )
-      const allItems = [...changedFileOptions, ...filteredCategories, ...skillOptions, ...agentOptions, ...repoFileOptions]
+      const allItems = [...changedFileOptions, ...filteredCategories, ...skillOptions, ...agentOptions, ...toolOptions, ...repoFileOptions]
       return sortFilesByRelevance(allItems, debouncedSearchText)
     }
 
     // No search: Changed files FIRST (quick access), then category navigation
     return [...changedFileOptions, ...availableCategoryOptions]
-  }, [showingFilesList, showingSkillsList, showingAgentsList, debouncedSearchText, changedFileOptions, repoFileOptions, skillOptions, agentOptions, hasOnlyFiles, availableCategoryOptions])
+  }, [showingFilesList, showingSkillsList, showingAgentsList, showingToolsList, debouncedSearchText, changedFileOptions, repoFileOptions, skillOptions, agentOptions, toolOptions, hasOnlyFiles, availableCategoryOptions])
 
   // Track previous values for smarter selection reset
   const prevIsOpenRef = useRef(isOpen)
@@ -865,6 +975,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const prevShowingFilesListRef = useRef(showingFilesList)
   const prevShowingSkillsListRef = useRef(showingSkillsList)
   const prevShowingAgentsListRef = useRef(showingAgentsList)
+  const prevShowingToolsListRef = useRef(showingToolsList)
 
   // CONSOLIDATED: Single useLayoutEffect for selection management (was 3 separate)
   useLayoutEffect(() => {
@@ -873,7 +984,8 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     const didSubpageChange =
       showingFilesList !== prevShowingFilesListRef.current ||
       showingSkillsList !== prevShowingSkillsListRef.current ||
-      showingAgentsList !== prevShowingAgentsListRef.current
+      showingAgentsList !== prevShowingAgentsListRef.current ||
+      showingToolsList !== prevShowingToolsListRef.current
 
     // Reset to 0 when opening, search changes, or subpage changes
     if (didJustOpen || didSearchChange || didSubpageChange) {
@@ -890,7 +1002,8 @@ export const AgentsFileMention = memo(function AgentsFileMention({
     prevShowingFilesListRef.current = showingFilesList
     prevShowingSkillsListRef.current = showingSkillsList
     prevShowingAgentsListRef.current = showingAgentsList
-  }, [isOpen, debouncedSearchText, options.length, selectedIndex, showingFilesList, showingSkillsList, showingAgentsList])
+    prevShowingToolsListRef.current = showingToolsList
+  }, [isOpen, debouncedSearchText, options.length, selectedIndex, showingFilesList, showingSkillsList, showingAgentsList, showingToolsList])
 
   // Reset placement when closed
   useEffect(() => {
@@ -982,15 +1095,18 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   // Calculate dropdown dimensions (matching canvas style)
   // Narrower dropdown when showing only categories (no changed files)
   const hasChangedFiles = changedFileOptions.length > 0
-  const isRootView = !showingFilesList && !showingSkillsList && !showingAgentsList && !hasOnlyFiles
-  // Narrow dropdown for root view (categories only) and skills/agents subpages
+  const isRootView = !showingFilesList && !showingSkillsList && !showingAgentsList && !showingToolsList && !hasOnlyFiles
+  // Narrow dropdown for root view (categories only) and skills/agents/tools subpages
   // Wide dropdown for files (showingFilesList or hasOnlyFiles)
-  const useNarrowWidth = (isRootView && !hasChangedFiles && !debouncedSearchText) || showingSkillsList || showingAgentsList
+  const useNarrowWidth = (isRootView && !hasChangedFiles && !debouncedSearchText) || showingSkillsList || showingAgentsList || showingToolsList
   const dropdownWidth = useNarrowWidth ? 200 : 320
   const itemHeight = 28
-  const headerHeight = 24
+  const headerHeight = 28 // header with py-1.5 and text-xs
+  // Only add header height when header is actually shown (in subpages or when searching)
+  const showsHeader = !isRootView || !!debouncedSearchText
+  const paddingHeight = 8 // py-1 on container = 4px top + 4px bottom
   const requestedHeight = Math.min(
-    options.length * itemHeight + headerHeight + 8,
+    options.length * itemHeight + (showsHeader ? headerHeight : 0) + paddingHeight,
     200,
   )
   const gap = 8
@@ -1091,6 +1207,7 @@ export const AgentsFileMention = memo(function AgentsFileMention({
                       {(showingFilesList || hasOnlyFiles) ? "Files & Folders" :
                        showingSkillsList ? "Skills" :
                        showingAgentsList ? "Agents" :
+                       showingToolsList ? "MCP Tools" :
                        "Results"}
                     </span>
                     {isFetching && !isLoading && (

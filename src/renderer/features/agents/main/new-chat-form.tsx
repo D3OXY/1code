@@ -230,6 +230,7 @@ export function NewChatForm({
   const [showingFilesList, setShowingFilesList] = useState(false)
   const [showingSkillsList, setShowingSkillsList] = useState(false)
   const [showingAgentsList, setShowingAgentsList] = useState(false)
+  const [showingToolsList, setShowingToolsList] = useState(false)
 
   // Slash command dropdown state
   const [showSlashDropdown, setShowSlashDropdown] = useState(false)
@@ -685,6 +686,10 @@ export function NewChatForm({
         setShowingAgentsList(true)
         return
       }
+      if (mention.id === "tools") {
+        setShowingToolsList(true)
+        return
+      }
     }
 
     // Otherwise: insert mention as normal
@@ -694,6 +699,7 @@ export function NewChatForm({
     setShowingFilesList(false)
     setShowingSkillsList(false)
     setShowingAgentsList(false)
+    setShowingToolsList(false)
   }, [])
 
   // Save draft to localStorage when content changes
@@ -758,6 +764,7 @@ export function NewChatForm({
         setShowingFilesList(false)
         setShowingSkillsList(false)
         setShowingAgentsList(false)
+        setShowingToolsList(false)
         setShowMentionDropdown(true)
       }
     },
@@ -770,6 +777,7 @@ export function NewChatForm({
     setShowingFilesList(false)
     setShowingSkillsList(false)
     setShowingAgentsList(false)
+    setShowingToolsList(false)
   }, [])
 
   // Slash command handlers
@@ -1437,6 +1445,7 @@ export function NewChatForm({
                     setShowingFilesList(false)
                     setShowingSkillsList(false)
                     setShowingAgentsList(false)
+                    setShowingToolsList(false)
                   }}
                   onSelect={handleMentionSelect}
                   searchText={mentionSearchText}
@@ -1445,6 +1454,7 @@ export function NewChatForm({
                   showingFilesList={showingFilesList}
                   showingSkillsList={showingSkillsList}
                   showingAgentsList={showingAgentsList}
+                  showingToolsList={showingToolsList}
                 />
 
                 {/* Slash command dropdown */}

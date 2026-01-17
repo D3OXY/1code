@@ -10,13 +10,14 @@ import {
   EyeOpenFilledIcon,
   SlidersFilledIcon,
 } from "../../icons"
-import { SkillIconFilled, CustomAgentIconFilled } from "../ui/icons"
+import { SkillIconFilled, CustomAgentIconFilled, OriginalMCPIcon } from "../ui/icons"
 import { AgentsAppearanceTab } from "./settings-tabs/agents-appearance-tab"
 import { AgentsProfileTab } from "./settings-tabs/agents-profile-tab"
 import { AgentsPreferencesTab } from "./settings-tabs/agents-preferences-tab"
 import { AgentsDebugTab } from "./settings-tabs/agents-debug-tab"
 import { AgentsSkillsTab } from "./settings-tabs/agents-skills-tab"
 import { AgentsCustomAgentsTab } from "./settings-tabs/agents-custom-agents-tab"
+import { AgentsMcpTab } from "./settings-tabs/agents-mcp-tab"
 
 // Hook to detect narrow screen
 function useIsNarrowScreen(): boolean {
@@ -75,6 +76,12 @@ const ALL_TABS = [
     icon: CustomAgentIconFilled,
     description: "Manage custom Claude agents",
     beta: true,
+  },
+  {
+    id: "mcp" as SettingsTab,
+    label: "MCP Servers",
+    icon: OriginalMCPIcon,
+    description: "Model Context Protocol servers",
   },
   // Debug tab - always shown in desktop for development
   ...(isDevelopment
@@ -203,6 +210,8 @@ export function AgentsSettingsDialog({
         return <AgentsSkillsTab />
       case "agents":
         return <AgentsCustomAgentsTab />
+      case "mcp":
+        return <AgentsMcpTab />
       case "debug":
         return isDevelopment ? <AgentsDebugTab /> : null
       default:

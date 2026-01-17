@@ -138,6 +138,13 @@ contextBridge.exposeInMainWorld("desktopApi", {
     ipcRenderer.on("shortcut:new-agent", handler)
     return () => ipcRenderer.removeListener("shortcut:new-agent", handler)
   },
+
+  // File change events (from Claude Write/Edit tools)
+  onFileChanged: (callback: (data: { filePath: string; type: string; subChatId: string }) => void) => {
+    const handler = (_event: unknown, data: { filePath: string; type: string; subChatId: string }) => callback(data)
+    ipcRenderer.on("file-changed", handler)
+    return () => ipcRenderer.removeListener("file-changed", handler)
+  },
 })
 
 // Type definitions
@@ -213,6 +220,8 @@ export interface DesktopApi {
   onAuthError: (callback: (error: string) => void) => () => void
   // Shortcuts
   onShortcutNewAgent: (callback: () => void) => () => void
+  // File changes
+  onFileChanged: (callback: (data: { filePath: string; type: string; subChatId: string }) => void) => () => void
 }
 
 declare global {

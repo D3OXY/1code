@@ -39,6 +39,7 @@ import {
   PromptInputContextItems,
 } from "../../../components/ui/prompt-input"
 import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
+import { TextShimmer } from "../../../components/ui/text-shimmer"
 import {
   Tooltip,
   TooltipContent,
@@ -62,7 +63,9 @@ import {
 } from "lucide-react"
 import { motion } from "motion/react"
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -91,6 +94,7 @@ import {
   agentsSubChatUnseenChangesAtom,
   agentsUnseenChangesAtom,
   clearLoading,
+  compactingSubChatsAtom,
   diffSidebarOpenAtomFamily,
   isPlanModeAtom,
   justCreatedIdsAtom,
@@ -166,6 +170,7 @@ import { AgentWebFetchTool } from "../ui/agent-web-fetch-tool"
 import { AgentWebSearchCollapsible } from "../ui/agent-web-search-collapsible"
 import { AgentsHeaderControls } from "../ui/agents-header-controls"
 import { ChatTitleEditor } from "../ui/chat-title-editor"
+import { McpServersIndicator } from "../ui/mcp-servers-indicator"
 import { MobileChatHeader } from "../ui/mobile-chat-header"
 import { PrStatusBar } from "../ui/pr-status-bar"
 import { SubChatSelector } from "../ui/sub-chat-selector"
@@ -697,6 +702,46 @@ function PlayButton({
   )
 }
 
+// Message group wrapper - measures user message height for sticky todo positioning
+interface MessageGroupProps {
+  children: React.ReactNode
+}
+
+function MessageGroup({ children }: MessageGroupProps) {
+  const groupRef = useRef<HTMLDivElement>(null)
+  const userMessageRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const groupEl = groupRef.current
+    if (!groupEl) return
+
+    // Find the actual bubble element (not the wrapper which includes gradient)
+    const bubbleEl = groupEl.querySelector('[data-user-bubble]') as HTMLDivElement | null
+    if (!bubbleEl) return
+
+    userMessageRef.current = bubbleEl
+
+    const updateHeight = () => {
+      const height = bubbleEl.offsetHeight
+      // Set CSS variable directly on DOM - no React state, no re-renders
+      groupEl.style.setProperty('--user-message-height', `${height}px`)
+    }
+
+    updateHeight()
+
+    const observer = new ResizeObserver(updateHeight)
+    observer.observe(bubbleEl)
+
+    return () => observer.disconnect()
+  }, [])
+
+  return (
+    <div ref={groupRef} className="relative">
+      {children}
+    </div>
+  )
+}
+
 // Collapsible steps component for intermediate content before final response
 interface CollapsibleStepsProps {
   stepsCount: number
@@ -1030,6 +1075,7 @@ function ChatViewInner({
   const [showingFilesList, setShowingFilesList] = useState(false)
   const [showingSkillsList, setShowingSkillsList] = useState(false)
   const [showingAgentsList, setShowingAgentsList] = useState(false)
+  const [showingToolsList, setShowingToolsList] = useState(false)
 
   // Slash command dropdown state
   const [showSlashDropdown, setShowSlashDropdown] = useState(false)
@@ -1212,6 +1258,19 @@ function ChatViewInner({
   }, [status, subChatId, messages.length])
 
   const isStreaming = status === "streaming" || status === "submitted"
+
+  // Track compacting status from SDK
+  const compactingSubChats = useAtomValue(compactingSubChatsAtom)
+  const isCompacting = compactingSubChats.has(subChatId)
+
+  // Handler to trigger manual context compaction
+  const handleCompact = useCallback(() => {
+    if (isStreaming) return // Can't compact while streaming
+    sendMessage({
+      role: "user",
+      parts: [{ type: "text", text: "/compact" }],
+    })
+  }, [isStreaming, sendMessage])
 
   // Keep refs updated for scroll save cleanup to use
   useEffect(() => {
@@ -2046,6 +2105,10 @@ function ChatViewInner({
         setShowingAgentsList(true)
         return
       }
+      if (mention.id === "tools") {
+        setShowingToolsList(true)
+        return
+      }
     }
 
     // Otherwise: insert mention as normal
@@ -2055,6 +2118,7 @@ function ChatViewInner({
     setShowingFilesList(false)
     setShowingSkillsList(false)
     setShowingAgentsList(false)
+    setShowingToolsList(false)
   }, [])
 
   // Slash command handlers
@@ -2096,6 +2160,10 @@ function ChatViewInner({
               setIsPlanMode(false)
             }
             break
+          case "compact":
+            // Trigger context compaction
+            handleCompact()
+            break
           // Prompt-based commands - auto-send to agent
           case "review":
           case "pr-comments":
@@ -2120,7 +2188,7 @@ function ChatViewInner({
         setTimeout(() => handleSend(), 0)
       }
     },
-    [isPlanMode, setIsPlanMode, handleSend, onCreateNewSubChat],
+    [isPlanMode, setIsPlanMode, handleSend, onCreateNewSubChat, handleCompact],
   )
 
   // Paste handler for images and plain text
@@ -2345,78 +2413,79 @@ function ChatViewInner({
                 group.assistantMsgs.length === 0
 
               return (
-                <div key={msg.id} className="relative">
-                  {/* Attachments - NOT sticky, scroll normally */}
-                  {imageParts.length > 0 && (
-                    <motion.div
-                      className="mb-2 pointer-events-auto"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ duration: 0.1, ease: "easeOut" }}
-                    >
-                      <AgentUserMessageBubble
-                        messageId={msg.id}
-                        textContent=""
-                        imageParts={imageParts}
-                      />
-                    </motion.div>
-                  )}
-                  {/* User message text - sticky WITHIN this group */}
-                  <div
-                    data-user-message-id={msg.id}
-                    className={cn(
-                      "[&>div]:!mb-4 pointer-events-auto",
-                      // Sticky within the group container
-                      "sticky z-10",
-                      isMobile
-                        ? CHAT_LAYOUT.stickyTopMobile
-                        : isSubChatsSidebarOpen
-                          ? CHAT_LAYOUT.stickyTopSidebarOpen
-                          : CHAT_LAYOUT.stickyTopSidebarClosed,
-                    )}
-                  >
-                    <AgentUserMessageBubble
-                      messageId={msg.id}
-                      textContent={textContent || ""}
-                      imageParts={[]}
-                    />
-                    {/* Cloning indicator - shown while sandbox is being set up */}
-                    {shouldShowCloning && (
-                      <div className="mt-4">
-                        <AgentToolCall
-                          icon={AgentToolRegistry["tool-cloning"].icon}
-                          title={AgentToolRegistry["tool-cloning"].title({})}
-                          isPending={true}
-                          isError={false}
+                <MessageGroup key={msg.id}>
+                      {/* Attachments - NOT sticky, scroll normally */}
+                      {imageParts.length > 0 && (
+                        <motion.div
+                          className="mb-2 pointer-events-auto"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          transition={{ duration: 0.1, ease: "easeOut" }}
+                        >
+                          <AgentUserMessageBubble
+                            messageId={msg.id}
+                            textContent=""
+                            imageParts={imageParts}
+                          />
+                        </motion.div>
+                      )}
+                      {/* User message text - sticky WITHIN this group */}
+                      <div
+                        data-user-message-id={msg.id}
+                        className={cn(
+                          "[&>div]:!mb-4 pointer-events-auto",
+                          // Sticky within the group container
+                          // No z-index here to avoid blocking dropdowns/tooltips
+                          "sticky",
+                          isMobile
+                            ? CHAT_LAYOUT.stickyTopMobile
+                            : isSubChatsSidebarOpen
+                              ? CHAT_LAYOUT.stickyTopSidebarOpen
+                              : CHAT_LAYOUT.stickyTopSidebarClosed,
+                        )}
+                      >
+                        <AgentUserMessageBubble
+                          messageId={msg.id}
+                          textContent={textContent || ""}
+                          imageParts={[]}
                         />
+                        {/* Cloning indicator - shown while sandbox is being set up */}
+                        {shouldShowCloning && (
+                          <div className="mt-4">
+                            <AgentToolCall
+                              icon={AgentToolRegistry["tool-cloning"].icon}
+                              title={AgentToolRegistry["tool-cloning"].title({})}
+                              isPending={true}
+                              isError={false}
+                            />
+                          </div>
+                        )}
+                        {/* Setup error with retry */}
+                        {shouldShowSetupError && (
+                          <div className="mt-4 p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
+                            <div className="flex items-center gap-2 text-destructive text-sm">
+                              <span>
+                                Failed to set up sandbox
+                                {sandboxSetupError ? `: ${sandboxSetupError}` : ""}
+                              </span>
+                              {onRetrySetup && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={onRetrySetup}
+                                >
+                                  Retry
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    )}
-                    {/* Setup error with retry */}
-                    {shouldShowSetupError && (
-                      <div className="mt-4 p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
-                        <div className="flex items-center gap-2 text-destructive text-sm">
-                          <span>
-                            Failed to set up sandbox
-                            {sandboxSetupError ? `: ${sandboxSetupError}` : ""}
-                          </span>
-                          {onRetrySetup && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={onRetrySetup}
-                            >
-                              Retry
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
 
-                  {/* Assistant messages in this group */}
-                  {group.assistantMsgs.map((assistantMsg) => {
-                    const isLastMessage =
-                      assistantMsg.id === messages[messages.length - 1]?.id
+                      {/* Assistant messages in this group */}
+                      {group.assistantMsgs.map((assistantMsg) => {
+                        const isLastMessage =
+                          assistantMsg.id === messages[messages.length - 1]?.id
 
                     // Assistant message - flat layout, no bubble (like Canvas)
                     const contentParts =
@@ -2753,6 +2822,7 @@ function ChatViewInner({
                       }
 
                       // Special handling for tool-TodoWrite - todo list with progress
+                      // All todos render inline - sticky behavior is handled by IntersectionObserver
                       if (part.type === "tool-TodoWrite") {
                         return (
                           <AgentTodoTool
@@ -2956,17 +3026,17 @@ function ChatViewInner({
                   {isStreaming &&
                     isLastUserMessage &&
                     group.assistantMsgs.length === 0 &&
-                    sandboxSetupStatus === "ready" && (
-                      <div className="mt-4">
-                        <AgentToolCall
-                          icon={AgentToolRegistry["tool-planning"].icon}
-                          title={AgentToolRegistry["tool-planning"].title({})}
-                          isPending={true}
-                          isError={false}
-                        />
-                      </div>
-                    )}
-                </div>
+                        sandboxSetupStatus === "ready" && (
+                          <div className="mt-4">
+                            <AgentToolCall
+                              icon={AgentToolRegistry["tool-planning"].icon}
+                              title={AgentToolRegistry["tool-planning"].title({})}
+                              isPending={true}
+                              isError={false}
+                            />
+                          </div>
+                        )}
+                </MessageGroup>
               )
             })}
           </div>
@@ -2995,6 +3065,7 @@ function ChatViewInner({
               <SubChatStatusCard
                 chatId={parentChatId}
                 isStreaming={isStreaming}
+                isCompacting={isCompacting}
                 changedFiles={changedFilesForSubChat}
                 worktreePath={projectPath}
                 onStop={async () => {
@@ -3102,6 +3173,7 @@ function ChatViewInner({
                       setShowingFilesList(false)
                       setShowingSkillsList(false)
                       setShowingAgentsList(false)
+                      setShowingToolsList(false)
                     }}
                     onSlashTrigger={handleSlashTrigger}
                     onCloseSlashTrigger={handleCloseSlashTrigger}
@@ -3349,8 +3421,13 @@ function ChatViewInner({
                       }}
                     />
 
-                    {/* Context window indicator */}
-                    <AgentContextIndicator messages={messages} />
+                    {/* Context window indicator - click to compact */}
+                    <AgentContextIndicator
+                      messages={messages}
+                      onCompact={handleCompact}
+                      isCompacting={isCompacting}
+                      disabled={isStreaming}
+                    />
 
                     {/* Attachment button */}
                     <Button
@@ -3430,6 +3507,7 @@ function ChatViewInner({
             setShowingFilesList(false)
             setShowingSkillsList(false)
             setShowingAgentsList(false)
+            setShowingToolsList(false)
           }}
           onSelect={handleMentionSelect}
           searchText={mentionSearchText}
@@ -3443,6 +3521,7 @@ function ChatViewInner({
           showingFilesList={showingFilesList}
           showingSkillsList={showingSkillsList}
           showingAgentsList={showingAgentsList}
+          showingToolsList={showingToolsList}
         />
 
         {/* Slash command dropdown */}
@@ -3711,6 +3790,8 @@ export function ChatView({
 
   // Desktop: use worktreePath instead of sandbox
   const worktreePath = agentChat?.worktreePath as string | null
+  // Desktop: original project path for MCP config lookup
+  const originalProjectPath = (agentChat as any)?.project?.path as string | undefined
   // Fallback for web: use sandbox_id
   const sandboxId = agentChat?.sandbox_id
   const sandboxUrl = sandboxId ? `https://3003-${sandboxId}.e2b.app` : null
@@ -4136,11 +4217,14 @@ export function ChatView({
 
       // Desktop: use IPCChatTransport for local Claude Code execution
       // Note: Extended thinking setting is read dynamically inside the transport
+      // projectPath: original project path for MCP config lookup (worktreePath is the cwd)
+      const projectPath = (agentChat as any)?.project?.path as string | undefined
       const transport = worktreePath
         ? new IPCChatTransport({
             chatId,
             subChatId,
             cwd: worktreePath,
+            projectPath,
             mode: subChatMode,
           })
         : null // Web transport not supported in desktop app
@@ -4266,10 +4350,13 @@ export function ChatView({
     if (worktreePath) {
       // Desktop: use IPCChatTransport for local Claude Code execution
       // Note: Extended thinking setting is read dynamically inside the transport
+      // projectPath: original project path for MCP config lookup (worktreePath is the cwd)
+      const projectPath = (agentChat as any)?.project?.path as string | undefined
       const transport = new IPCChatTransport({
         chatId,
         subChatId: newId,
         cwd: worktreePath,
+        projectPath,
         mode: subChatMode,
       })
 
@@ -4820,6 +4907,8 @@ export function ChatView({
                         isDiffSidebarOpen={isDiffSidebarOpen}
                         diffStats={diffStats}
                       />
+                      {/* MCP Servers indicator */}
+                      <McpServersIndicator projectPath={originalProjectPath} />
                     </>
                   )}
                 </div>

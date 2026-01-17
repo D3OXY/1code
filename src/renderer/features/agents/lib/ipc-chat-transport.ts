@@ -4,11 +4,13 @@ import { toast } from "sonner"
 import {
   agentsLoginModalOpenAtom,
   extendedThinkingEnabledAtom,
+  sessionInfoAtom,
 } from "../../../lib/atoms"
 import { appStore } from "../../../lib/jotai-store"
 import { trpcClient } from "../../../lib/trpc"
 import {
   askUserQuestionResultsAtom,
+  compactingSubChatsAtom,
   lastSelectedModelIdAtom,
   MODEL_ID_MAP,
   pendingAuthRetryMessageAtom,
@@ -89,6 +91,7 @@ type IPCChatTransportConfig = {
   chatId: string
   subChatId: string
   cwd: string
+  projectPath?: string // Original project path for MCP config lookup (when using worktrees)
   mode: "plan" | "agent"
   model?: string
 }
@@ -138,7 +141,7 @@ export class IPCChatTransport implements ChatTransport<UIMessage> {
     const subId = this.config.subChatId.slice(-8)
     let chunkCount = 0
     let lastChunkType = ""
-    console.log(`[SD] R:START sub=${subId}`)
+    console.log(`[SD] R:START sub=${subId} cwd=${this.config.cwd} projectPath=${this.config.projectPath || "(not set)"}`)
 
     return new ReadableStream({
       start: (controller) => {
@@ -148,6 +151,7 @@ export class IPCChatTransport implements ChatTransport<UIMessage> {
             chatId: this.config.chatId,
             prompt,
             cwd: this.config.cwd,
+            projectPath: this.config.projectPath, // Original project path for MCP config lookup
             mode: currentMode,
             sessionId,
             ...(maxThinkingTokens && { maxThinkingTokens }),
@@ -182,6 +186,38 @@ export class IPCChatTransport implements ChatTransport<UIMessage> {
                 const newResults = new Map(currentResults)
                 newResults.set(chunk.toolUseId, chunk.result)
                 appStore.set(askUserQuestionResultsAtom, newResults)
+              }
+
+              // Handle compacting status - track in atom for UI display
+              if (chunk.type === "system-Compact") {
+                const compacting = appStore.get(compactingSubChatsAtom)
+                const newCompacting = new Set(compacting)
+                if (chunk.state === "input-streaming") {
+                  // Compacting started
+                  newCompacting.add(this.config.subChatId)
+                } else {
+                  // Compacting finished (output-available)
+                  newCompacting.delete(this.config.subChatId)
+                }
+                appStore.set(compactingSubChatsAtom, newCompacting)
+              }
+
+              // Handle session init - store MCP servers, plugins, tools info
+              if (chunk.type === "session-init") {
+                console.log("[MCP] Received session-init:", {
+                  tools: chunk.tools?.length,
+                  mcpServers: chunk.mcpServers,
+                  plugins: chunk.plugins,
+                  skills: chunk.skills?.length,
+                  // Debug: show all tools to check for MCP tools (format: mcp__servername__toolname)
+                  allTools: chunk.tools,
+                })
+                appStore.set(sessionInfoAtom, {
+                  tools: chunk.tools,
+                  mcpServers: chunk.mcpServers,
+                  plugins: chunk.plugins,
+                  skills: chunk.skills,
+                })
               }
 
               // Clear pending questions ONLY when agent has moved on

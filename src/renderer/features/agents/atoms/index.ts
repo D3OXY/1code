@@ -465,7 +465,8 @@ export const lastSelectedBranchesAtom = atomWithStorage<Record<string, string>>(
 )
 
 // Compacting status per sub-chat
-// Map<subChatId, { status: "compacting" | "idle", lastCompact?: { trigger, preTokens } }>
+// Set<subChatId> - subChats currently being compacted
+export const compactingSubChatsAtom = atom<Set<string>>(new Set())
 
 // Track IDs of chats/subchats created in this browser session (NOT persisted - resets on reload)
 // Used to determine whether to show placeholder + typewriter effect
